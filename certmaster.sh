@@ -6,7 +6,7 @@
 #                 (Modern CLI Edition)
 # =========================================================
 
-VERSION="2.0.0 CLI"
+VERSION="2.0.1 CLI"
 
 # =========================================================
 # PATHS
@@ -63,10 +63,10 @@ fi
 ui_header() {
     clear
     echo -e "${NEON_BLUE}${BOLD}"
-    echo "╭────────────────────────────────────────────────────────────────────────╮"
-    echo "│                   CERTMASTER ENTERPRISE v$VERSION                   │"
-    echo "│                Advanced SSL Management Terminal UI                     │"
-    echo "╰────────────────────────────────────────────────────────────────────────╯"
+    echo "╭───────────────────────────────────────────────────────────────────────────────╮"
+    echo "│                       CERTMASTER ENTERPRISE v$VERSION                       │"
+    echo "│                    Advanced SSL Management Terminal UI                        │"
+    echo "╰───────────────────────────────────────────────────────────────────────────────╯"
     echo -e "${RESET}"
 }
 
@@ -109,6 +109,12 @@ detect_webserver() {
 
 ssl_grade() {
     DAYS=$1
+    # جلوگیری از باگ کرش ریاضی: بررسی معتبر بودن عدد
+    if ! [[ "$DAYS" =~ ^-?[0-9]+$ ]]; then
+        echo -e "${RED}ERR${RESET}"
+        return
+    fi
+
     if [ $DAYS -gt 60 ]; then echo -e "${NEON_GREEN}A+${RESET}"
     elif [ $DAYS -gt 30 ]; then echo -e "${GREEN}A${RESET}"
     elif [ $DAYS -gt 15 ]; then echo -e "${YELLOW}B${RESET}"
@@ -280,10 +286,21 @@ get_scanned_domains() {
             
             [ -z "$CERT_FILE" ] || [ ! -f "$CERT_FILE" ] && continue
 
+            # سیستم جلوگیری از کرش (تست سلامت فایل)
             EXPIRY_DATE=$(openssl x509 -enddate -noout -in "$CERT_FILE" 2>/dev/null | cut -d= -f2)
-            [ -z "$EXPIRY_DATE" ] && continue
+            if [ -z "$EXPIRY_DATE" ]; then
+                # فایل ناقص یا خراب است، پرش از روی دامنه
+                continue
+            fi
             
-            DAYS_LEFT=$(( ($(date -d "$EXPIRY_DATE" +%s) - $(date +%s)) / 86400 ))
+            EXP_EPOCH=$(date -d "$EXPIRY_DATE" +%s 2>/dev/null)
+            CUR_EPOCH=$(date +%s)
+            
+            if [[ -z "$EXP_EPOCH" ]]; then
+                continue # محافظت نهایی در برابر خطای محاسباتی
+            else
+                DAYS_LEFT=$(( (EXP_EPOCH - CUR_EPOCH) / 86400 ))
+            fi
             
             PANEL_INFO=$(jq -r --arg d "$DOMAIN" '.domains[] | select(.main_domain==$d) | .panel' "$CONFIG_FILE" 2>/dev/null)
             [[ -z "$PANEL_INFO" || "$PANEL_INFO" == "null" ]] && PANEL_INFO="Unknown/Manual"
@@ -305,19 +322,20 @@ list_certificates() {
     get_scanned_domains
 
     if [ ${#CERTS_LIST[@]} -eq 0 ]; then
-        warning "No SSL certificates found on the server."
+        warning "No valid SSL certificates found on the server."
         pause_screen
         return
     fi
 
-    printf "${CYAN}%-4s %-40s %-15s %-10s %-8s${RESET}\n" "ID" "DOMAIN" "PANEL" "DAYS LEFT" "GRADE"
-    echo -e "${GRAY}--------------------------------------------------------------------------------${RESET}"
+    # عریض شدن ستون نام دامنه (%-65s) برای جلوگیری از شکستگی جدول
+    printf "${CYAN}%-4s %-65s %-15s %-10s %-8s${RESET}\n" "ID" "DOMAIN" "PANEL" "DAYS LEFT" "GRADE"
+    echo -e "${GRAY}-------------------------------------------------------------------------------------------------------------${RESET}"
 
     INDEX=1
     for item in "${CERTS_LIST[@]}"; do
         IFS='|' read -r d_name d_days d_panel d_file <<< "$item"
-        GRADE=$(ssl_grade $d_days)
-        printf "%-4s %-40s %-15s %-10s %-8b\n" "[$INDEX]" "$d_name" "$d_panel" "$d_days" "$GRADE"
+        GRADE=$(ssl_grade "$d_days")
+        printf "%-4s %-65s %-15s %-10s %-8b\n" "[$INDEX]" "$d_name" "$d_panel" "$d_days" "$GRADE"
         ((INDEX++))
     done
 
@@ -326,17 +344,21 @@ list_certificates() {
     echo
     read -p "➜ Select ID for details (or 0 to exit): " CHOICE
 
+    # بررسی صحت انتخاب و اجرای جزئیات
     if [[ "$CHOICE" =~ ^[0-9]+$ ]] && [ "$CHOICE" -gt 0 ] && [ "$CHOICE" -le ${#CERTS_LIST[@]} ]; then
         SELECTED_INDEX=$((CHOICE - 1))
         IFS='|' read -r d_name d_days d_panel d_file <<< "${CERTS_LIST[$SELECTED_INDEX]}"
+        
+        CERT_DIR=$(dirname "$d_file")
         
         ui_header
         echo -e "${NEON_PINK}--- CERTIFICATE DETAILS ---${RESET}"
         echo -e "${CYAN}🌐 Domain:${RESET}       $d_name"
         echo -e "${CYAN}📦 Panel DB:${RESET}     $d_panel"
-        echo -e "${CYAN}📂 Detected Path:${RESET} $(dirname "$d_file")"
+        echo -e "${CYAN}📂 Cert File:${RESET}    $CERT_DIR/fullchain.pem"
+        echo -e "${CYAN}🔑 Private Key:${RESET}  $CERT_DIR/privkey.pem"
         echo -e "${CYAN}⏳ Days Left:${RESET}    $d_days days"
-        echo -e "${CYAN}🏆 SSL Grade:${RESET}    $(ssl_grade $d_days)"
+        echo -e "${CYAN}🏆 SSL Grade:${RESET}    $(ssl_grade "$d_days")"
     fi
     pause_screen
 }
@@ -357,13 +379,14 @@ delete_certificate() {
         return
     fi
 
-    printf "${CYAN}%-4s %-45s %-15s${RESET}\n" "ID" "DOMAIN TO DELETE" "DETECTED IN"
-    echo -e "${GRAY}----------------------------------------------------------------------${RESET}"
+    # عریض شدن ستون‌ها در بخش حذف
+    printf "${CYAN}%-4s %-65s %-15s${RESET}\n" "ID" "DOMAIN TO DELETE" "DETECTED IN"
+    echo -e "${GRAY}-----------------------------------------------------------------------------------------${RESET}"
 
     INDEX=1
     for item in "${CERTS_LIST[@]}"; do
         IFS='|' read -r d_name d_days d_panel d_file <<< "$item"
-        printf "%-4s %-45s %-15s\n" "[$INDEX]" "$d_name" "$d_panel"
+        printf "%-4s %-65s %-15s\n" "[$INDEX]" "$d_name" "$d_panel"
         ((INDEX++))
     done
 
