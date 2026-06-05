@@ -394,32 +394,61 @@ if [[ "$1" == "--sync" ]]; then
 fi
 
 # =========================================================
-# LIST CERTIFICATES
+# LIST CERTIFICATES (SMART DEEP SCAN)
 # =========================================================
 list_certificates() {
     CERTS=()
     MENUS=()
+    SEEN_DOMAINS=()
     INDEX=1
 
-    for cert_dir in /etc/letsencrypt/live/*; do
-        [ -d "$cert_dir" ] || continue
-        DOMAIN=$(basename "$cert_dir")
-        [ "$DOMAIN" == "README" ] && continue
-        
-        CERT_FILE="$cert_dir/fullchain.pem"
-        [ ! -f "$CERT_FILE" ] && continue
+    # مسیرهای کلیدی که باید اسکن شوند (Certbot + Panel Folders)
+    SEARCH_DIRS=(
+        "/etc/letsencrypt/live"
+        "/var/lib/rebecca/certs"
+        "/var/lib/marzban/certs"
+        "/var/lib/pasarguard/certs"
+        "/var/lib/marzneshin/certs"
+    )
 
-        EXPIRY_DATE=$(openssl x509 -enddate -noout -in "$CERT_FILE" | cut -d= -f2)
-        DAYS_LEFT=$(( ($(date -d "$EXPIRY_DATE" +%s) - $(date +%s)) / 86400 ))
-        GRADE=$(ssl_grade $DAYS_LEFT)
+    for base_dir in "${SEARCH_DIRS[@]}"; do
+        [ -d "$base_dir" ] || continue
         
-        CERTS+=("$DOMAIN")
-        MENUS+=("$INDEX" "$DOMAIN | Days: $DAYS_LEFT | Grade: $GRADE")
-        ((INDEX++))
+        for cert_dir in "$base_dir"/*; do
+            [ -d "$cert_dir" ] || continue
+            DOMAIN=$(basename "$cert_dir")
+            [ "$DOMAIN" == "README" ] && continue
+            
+            # فیلتر هوشمند برای جلوگیری از نمایش دوگانه دامنه‌ها
+            if [[ " ${SEEN_DOMAINS[@]} " =~ " ${DOMAIN} " ]]; then
+                continue
+            fi
+
+            # پیدا کردن فایل گواهینامه با هر نام استانداردی
+            CERT_FILE="$cert_dir/fullchain.pem"
+            if [ ! -f "$CERT_FILE" ]; then
+                CERT_FILE=$(find "$cert_dir" -maxdepth 1 -name "*.crt" -o -name "*.pem" | head -n 1)
+            fi
+            
+            [ -z "$CERT_FILE" ] || [ ! -f "$CERT_FILE" ] && continue
+
+            # استخراج تاریخ بدون نمایش ارور در ترمینال
+            EXPIRY_DATE=$(openssl x509 -enddate -noout -in "$CERT_FILE" 2>/dev/null | cut -d= -f2)
+            [ -z "$EXPIRY_DATE" ] && continue
+            
+            DAYS_LEFT=$(( ($(date -d "$EXPIRY_DATE" +%s) - $(date +%s)) / 86400 ))
+            GRADE=$(ssl_grade $DAYS_LEFT)
+            
+            SEEN_DOMAINS+=("$DOMAIN")
+            # ذخیره مسیر دقیق برای نمایش در جزئیات
+            CERTS+=("$CERT_FILE|$DOMAIN") 
+            MENUS+=("$INDEX" "$DOMAIN | Days: $DAYS_LEFT | Grade: $GRADE")
+            ((INDEX++))
+        done
     done
 
     if [ ${#MENUS[@]} -eq 0 ]; then
-        msgbox "Certificates" "No SSL certificates found."
+        msgbox "Certificates" "No SSL certificates found on the server."
         return
     fi
 
@@ -427,17 +456,22 @@ list_certificates() {
     [[ -z "$CHOICE" ]] && return
 
     SELECTED_INDEX=$((CHOICE - 1))
-    DOMAIN="${CERTS[$SELECTED_INDEX]}"
+    SELECTED_DATA="${CERTS[$SELECTED_INDEX]}"
     
-    EXPIRY_DATE=$(openssl x509 -enddate -noout -in "/etc/letsencrypt/live/$DOMAIN/fullchain.pem" | cut -d= -f2)
+    # جداسازی مسیر فایل و نام دامنه
+    EXACT_CERT_FILE="${SELECTED_DATA%%|*}"
+    DOMAIN="${SELECTED_DATA##*|}"
+    
+    EXPIRY_DATE=$(openssl x509 -enddate -noout -in "$EXACT_CERT_FILE" | cut -d= -f2)
     DAYS_LEFT=$(( ($(date -d "$EXPIRY_DATE" +%s) - $(date +%s)) / 86400 ))
     GRADE=$(ssl_grade $DAYS_LEFT)
     
     PANEL_INFO=$(jq -r --arg d "$DOMAIN" '.domains[] | select(.main_domain==$d) | .panel' "$CONFIG_FILE")
-    [[ -z "$PANEL_INFO" || "$PANEL_INFO" == "null" ]] && PANEL_INFO="Unknown / Not in DB"
+    [[ -z "$PANEL_INFO" || "$PANEL_INFO" == "null" ]] && PANEL_INFO="Unknown / Manual Install"
 
     INFO="🌐 Domain: $DOMAIN\n"
-    INFO+="📦 Active Panel: $PANEL_INFO\n"
+    INFO+="📦 Linked Panel DB: $PANEL_INFO\n"
+    INFO+="📂 Detected Path: $(dirname "$EXACT_CERT_FILE")\n"
     INFO+="📅 Expire Date: $(date -d "$EXPIRY_DATE" +%Y-%m-%d)\n"
     INFO+="⏳ Days Left: $DAYS_LEFT days\n"
     INFO+="🏆 SSL Grade: $GRADE\n"
