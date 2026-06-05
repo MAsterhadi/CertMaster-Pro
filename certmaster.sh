@@ -5,7 +5,7 @@
 #        Ultimate Commercial SSL Management Suite
 # =========================================================
 
-VERSION="1.0.4"
+VERSION="1.0.5"
 
 # =========================================================
 # COLOR THEME FOR TUI (WHIPTAIL)
@@ -51,6 +51,22 @@ if [[ $EUID -ne 0 ]]; then
 fi
 
 # =========================================================
+# RESPONSIVE UI SIZING (DYNAMIC)
+# =========================================================
+calc_size() {
+    LINES=$(tput lines 2>/dev/null || echo 24)
+    COLS=$(tput cols 2>/dev/null || echo 80)
+    
+    # جلوگیری از کوچکتر شدن بیش از حد در ترمینال‌های مینی
+    [[ $LINES -lt 24 ]] && LINES=24
+    [[ $COLS -lt 70 ]] && COLS=70
+    
+    WT_HEIGHT=$((LINES - 4))
+    WT_WIDTH=$((COLS - 8))
+    WT_MENU=$((WT_HEIGHT - 10))
+}
+
+# =========================================================
 # INIT & DEPENDENCIES
 # =========================================================
 mkdir -p "$CONFIG_DIR" "$LOG_DIR" "$BACKUP_DIR"
@@ -92,19 +108,21 @@ log() {
 }
 
 msgbox() {
-    whiptail --title " $1 " --msgbox "\n$2" 15 75
+    calc_size
+    whiptail --title " $1 " --msgbox "\n$2" $WT_HEIGHT $WT_WIDTH
 }
 
 progress_bar_ui() {
     DURATION=$1
     TITLE=$2
+    calc_size
     {
         for ((i=0; i<=100; i+= (100/DURATION) )); do
             echo $i
             sleep 1
         done
         echo 100
-    } | whiptail --title " $TITLE " --gauge "\nProcessing... Please wait." 10 70 0
+    } | whiptail --title " $TITLE " --gauge "\nProcessing... Please wait." 10 $WT_WIDTH 0
 }
 
 detect_webserver() {
@@ -168,7 +186,8 @@ health_monitor() {
 # AUTO REPAIR
 # =========================================================
 auto_repair() {
-    whiptail --title " Auto Repair " --yesno "Start automated system repair?\nThis will fix broken packages and restart services." 12 75
+    calc_size
+    whiptail --title " Auto Repair " --yesno "Start automated system repair?\n\nThis will fix broken packages and restart services." 12 $WT_WIDTH
     [[ $? -ne 0 ]] && return
 
     progress_bar_ui 5 "Repairing System"
@@ -183,10 +202,11 @@ auto_repair() {
 }
 
 # =========================================================
-# PANEL SELECTOR (Transparent)
+# PANEL SELECTOR
 # =========================================================
 select_panel() {
-    PANEL_CHOICE=$(whiptail --title " Target Panel " --menu "Select the panel you want to secure:" 18 75 6 \
+    calc_size
+    PANEL_CHOICE=$(whiptail --title " Target Panel " --menu "Select the panel you want to secure:" $WT_HEIGHT $WT_WIDTH $WT_MENU \
     "1" "Rebecca" \
     "2" "Marzban" \
     "3" "Pasarguard" \
@@ -198,7 +218,7 @@ select_panel() {
         2) TARGET_BASE_DIR="/var/lib/marzban/certs"; PANEL_NAME="Marzban" ;;
         3) TARGET_BASE_DIR="/var/lib/pasarguard/certs"; PANEL_NAME="Pasarguard" ;;
         4) TARGET_BASE_DIR="/var/lib/marzneshin/certs"; PANEL_NAME="Marzneshin" ;;
-        5) TARGET_BASE_DIR=$(whiptail --title " Custom Path " --inputbox "Enter custom absolute path for certs:" 12 75 3>&1 1>&2 2>&3); PANEL_NAME="Custom" ;;
+        5) TARGET_BASE_DIR=$(whiptail --title " Custom Path " --inputbox "Enter custom absolute path for certs:" 12 $WT_WIDTH 3>&1 1>&2 2>&3); PANEL_NAME="Custom" ;;
         *) return 1 ;;
     esac
 }
@@ -209,28 +229,29 @@ select_panel() {
 install_certificate() {
     select_panel || return
     
-    DOMAIN=$(whiptail --title " Domain Setup " --inputbox "Enter the domain name (e.g., app.example.com):" 12 75 3>&1 1>&2 2>&3)
+    calc_size
+    DOMAIN=$(whiptail --title " Domain Setup " --inputbox "Enter the domain name (e.g., app.example.com):" 12 $WT_WIDTH 3>&1 1>&2 2>&3)
     [[ -z "$DOMAIN" ]] && return
 
-    whiptail --title " Confirmation " --yesno "📌 TARGET VERIFICATION:\n\nDomain: $DOMAIN\nTarget Panel: $PANEL_NAME\nInstall Path: $TARGET_BASE_DIR/$DOMAIN\n\nProceed with these settings?" 18 75
+    whiptail --title " Confirmation " --yesno "📌 TARGET VERIFICATION:\n\nDomain: $DOMAIN\nTarget Panel: $PANEL_NAME\nInstall Path: $TARGET_BASE_DIR/$DOMAIN\n\nProceed with these settings?" 15 $WT_WIDTH
     [[ $? -ne 0 ]] && return
 
-    CHALLENGE=$(whiptail --title " SSL Challenge Method " --menu "Select validation method (Zero-Downtime Options):" 18 85 4 \
+    CHALLENGE=$(whiptail --title " SSL Challenge Method " --menu "Select validation method (Zero-Downtime Options):" $WT_HEIGHT $WT_WIDTH $WT_MENU \
     "1" "Webroot (No Downtime - Requires Nginx/Apache)" \
     "2" "Cloudflare DNS (No Downtime - Most Secure)" \
     "3" "Standalone (Requires temporary Port 80 availability)" 3>&1 1>&2 2>&3)
 
     case $CHALLENGE in
         1)
-            WEBROOT_PATH=$(whiptail --title " Webroot Path " --inputbox "Enter web server root path:" 12 75 "/var/www/html" 3>&1 1>&2 2>&3)
+            WEBROOT_PATH=$(whiptail --title " Webroot Path " --inputbox "Enter web server root path:" 12 $WT_WIDTH "/var/www/html" 3>&1 1>&2 2>&3)
             CERT_CMD="certbot certonly --webroot -w $WEBROOT_PATH -d $DOMAIN --non-interactive --agree-tos --register-unsafely-without-email"
             ;;
         2)
             CF_EMAIL=$(jq -r '.cloudflare_email' "$CONFIG_FILE")
             CF_KEY=$(jq -r '.cloudflare_api_key' "$CONFIG_FILE")
             if [[ -z "$CF_EMAIL" || "$CF_EMAIL" == "null" || -z "$CF_KEY" || "$CF_KEY" == "null" ]]; then
-                CF_EMAIL=$(whiptail --title " Cloudflare API " --inputbox "Enter Cloudflare Email:" 12 75 3>&1 1>&2 2>&3)
-                CF_KEY=$(whiptail --title " Cloudflare API " --inputbox "Enter Cloudflare API Key:" 12 75 3>&1 1>&2 2>&3)
+                CF_EMAIL=$(whiptail --title " Cloudflare API " --inputbox "Enter Cloudflare Email:" 12 $WT_WIDTH 3>&1 1>&2 2>&3)
+                CF_KEY=$(whiptail --title " Cloudflare API " --inputbox "Enter Cloudflare API Key:" 12 $WT_WIDTH 3>&1 1>&2 2>&3)
                 TMP=$(jq --arg e "$CF_EMAIL" --arg k "$CF_KEY" '.cloudflare_email=$e | .cloudflare_api_key=$k' "$CONFIG_FILE")
                 echo "$TMP" > "$CONFIG_FILE"
             fi
@@ -244,7 +265,7 @@ EOF
             ;;
         3)
             if lsof -Pi :80 -sTCP:LISTEN -t >/dev/null ; then
-                whiptail --title " Port 80 in Use " --yesno "Port 80 is active. Stop webserver temporarily to issue SSL?" 12 75
+                whiptail --title " Port 80 in Use " --yesno "Port 80 is active. Stop webserver temporarily to issue SSL?" 12 $WT_WIDTH
                 if [[ $? -eq 0 ]]; then
                     detect_webserver
                     [[ ! -z "$WEBSERVER" ]] && systemctl stop $WEBSERVER
@@ -257,7 +278,6 @@ EOF
         *) return ;;
     esac
 
-    # Execute
     clear
     echo -e "\033[1;36mGenerating SSL Certificate for $DOMAIN...\033[0m"
     $CERT_CMD
@@ -290,15 +310,16 @@ EOF
 # WILDCARD SSL
 # =========================================================
 wildcard_ssl() {
-    DOMAIN=$(whiptail --title " Wildcard SSL " --inputbox "Enter base domain (e.g., example.com):" 12 75 3>&1 1>&2 2>&3)
+    calc_size
+    DOMAIN=$(whiptail --title " Wildcard SSL " --inputbox "Enter base domain (e.g., example.com):" 12 $WT_WIDTH 3>&1 1>&2 2>&3)
     [[ -z "$DOMAIN" ]] && return
 
     CF_EMAIL=$(jq -r '.cloudflare_email' "$CONFIG_FILE")
     CF_KEY=$(jq -r '.cloudflare_api_key' "$CONFIG_FILE")
 
     if [[ -z "$CF_EMAIL" || "$CF_EMAIL" == "null" ]]; then
-        CF_EMAIL=$(whiptail --title " Cloudflare API " --inputbox "Enter Cloudflare Email:" 12 75 3>&1 1>&2 2>&3)
-        CF_KEY=$(whiptail --title " Cloudflare API " --inputbox "Enter Cloudflare API Key:" 12 75 3>&1 1>&2 2>&3)
+        CF_EMAIL=$(whiptail --title " Cloudflare API " --inputbox "Enter Cloudflare Email:" 12 $WT_WIDTH 3>&1 1>&2 2>&3)
+        CF_KEY=$(whiptail --title " Cloudflare API " --inputbox "Enter Cloudflare API Key:" 12 $WT_WIDTH 3>&1 1>&2 2>&3)
         TMP=$(jq --arg e "$CF_EMAIL" --arg k "$CF_KEY" '.cloudflare_email=$e | .cloudflare_api_key=$k' "$CONFIG_FILE")
         echo "$TMP" > "$CONFIG_FILE"
     fi
@@ -322,18 +343,18 @@ EOF
 }
 
 # =========================================================
-# DELETE CERTIFICATE (SMART SCAN)
+# DELETE CERTIFICATE (DEEP CLEAN)
 # =========================================================
 delete_certificate() {
+    calc_size
     DOMAINS_LIST=()
 
-    # اسکن مستقیم از هسته Certbot برای پیدا کردن تمام دامنه‌های سرور
+    # اسکن مستقیم از هسته سرتبات
     for cert_dir in /etc/letsencrypt/live/*; do
         [ -d "$cert_dir" ] || continue
         DOMAIN=$(basename "$cert_dir")
         [ "$DOMAIN" == "README" ] && continue
 
-        # خواندن اسم پنل از دیتابیس در صورت وجود
         PANEL_INFO=$(jq -r --arg d "$DOMAIN" '.domains[] | select(.main_domain==$d) | .panel' "$CONFIG_FILE" 2>/dev/null)
         [[ -z "$PANEL_INFO" || "$PANEL_INFO" == "null" ]] && PANEL_INFO="Unknown"
 
@@ -341,40 +362,46 @@ delete_certificate() {
     done
 
     if [ ${#DOMAINS_LIST[@]} -eq 0 ]; then
-        msgbox "Empty" "No managed certificates found in Certbot."
+        msgbox "Empty" "No managed certificates found on the server."
         return
     fi
 
-    SELECTED_DOMAIN=$(whiptail --title " Delete Certificate " --menu "Select domain to COMPLETELY remove:" 20 75 10 "${DOMAINS_LIST[@]}" 3>&1 1>&2 2>&3)
+    SELECTED_DOMAIN=$(whiptail --title " Delete Certificate " --menu "Select domain to COMPLETELY remove:" $WT_HEIGHT $WT_WIDTH $WT_MENU "${DOMAINS_LIST[@]}" 3>&1 1>&2 2>&3)
     [[ -z "$SELECTED_DOMAIN" ]] && return
 
-    whiptail --title " Warning " --yesno "Are you sure you want to completely DELETE $SELECTED_DOMAIN?\nThis removes it from Certbot, the target panel, and database." 12 75
+    whiptail --title " Warning " --yesno "Are you sure you want to completely DELETE $SELECTED_DOMAIN?\n\nThis removes it from Certbot, the target panel, and database." 12 $WT_WIDTH
     [[ $? -ne 0 ]] && return
 
-    # حذف از سرتبات
+    # 1. حذف محترمانه از طریق سرتبات
     certbot delete --cert-name "$SELECTED_DOMAIN" --non-interactive >/dev/null 2>&1
     
-    # حذف مسیر گواهینامه در پنل 
+    # 2. حذف ریشه‌ای و اجباری برای جلوگیری از باگ‌های سرتبات
+    rm -rf "/etc/letsencrypt/live/$SELECTED_DOMAIN"
+    rm -rf "/etc/letsencrypt/archive/$SELECTED_DOMAIN"
+    rm -f "/etc/letsencrypt/renewal/$SELECTED_DOMAIN.conf"
+    
+    # 3. حذف فایل‌های پنل
     INSTALL_PATH=$(jq -r --arg d "$SELECTED_DOMAIN" '.domains[] | select(.main_domain==$d) | .install_path' "$CONFIG_FILE" 2>/dev/null)
     if [[ ! -z "$INSTALL_PATH" && "$INSTALL_PATH" != "null" && -d "$INSTALL_PATH" ]]; then
         rm -rf "$INSTALL_PATH"
     fi
 
-    # پاک کردن از دیتابیس محلی
+    # 4. پاک کردن از دیتابیس محلی
     TMP=$(jq --arg d "$SELECTED_DOMAIN" '.domains |= map(select(.main_domain != $d))' "$CONFIG_FILE" 2>/dev/null)
     [[ ! -z "$TMP" ]] && echo "$TMP" > "$CONFIG_FILE"
 
-    log "DELETE" "Removed domain $SELECTED_DOMAIN"
-    msgbox "Success" "Domain $SELECTED_DOMAIN has been removed."
+    log "DELETE" "Completely removed domain $SELECTED_DOMAIN"
+    msgbox "Success" "Domain $SELECTED_DOMAIN has been completely wiped from the server."
 }
 
 # =========================================================
 # SMART AUTO RENEW & SYNC
 # =========================================================
 setup_auto_renew() {
+    calc_size
     CRON_JOB="0 3 * * * certbot renew --quiet --deploy-hook \"/usr/local/bin/certmaster --sync\" >> $LOG_FILE 2>&1"
     
-    whiptail --title " Smart Auto-Renew " --yesno "Enable Smart Auto-Renew?\n\nIt automatically checks daily and ONLY copies files to your panels if a certificate was successfully renewed." 15 75
+    whiptail --title " Smart Auto-Renew " --yesno "Enable Smart Auto-Renew?\n\nIt automatically checks daily and ONLY copies files to your panels if a certificate was successfully renewed." 12 $WT_WIDTH
     if [ $? -eq 0 ]; then
         crontab -l 2>/dev/null | grep -v "certmaster" | crontab -
         (crontab -l 2>/dev/null; echo "$CRON_JOB") | crontab -
@@ -407,9 +434,10 @@ if [[ "$1" == "--sync" ]]; then
 fi
 
 # =========================================================
-# LIST CERTIFICATES (SMART DEEP SCAN)
+# LIST CERTIFICATES
 # =========================================================
 list_certificates() {
+    calc_size
     CERTS=()
     MENUS=()
     SEEN_DOMAINS=()
@@ -450,7 +478,7 @@ list_certificates() {
             
             SEEN_DOMAINS+=("$DOMAIN")
             CERTS+=("$CERT_FILE|$DOMAIN") 
-            MENUS+=("$INDEX" "$DOMAIN | Days: $DAYS_LEFT | Grade: $GRADE")
+            MENUS+=("$INDEX" "$DOMAIN | Exp: $DAYS_LEFT d | $GRADE")
             ((INDEX++))
         done
     done
@@ -460,7 +488,7 @@ list_certificates() {
         return
     fi
 
-    CHOICE=$(whiptail --title " SSL Certificates " --menu "Select a domain to view details:" 22 80 12 "${MENUS[@]}" 3>&1 1>&2 2>&3)
+    CHOICE=$(whiptail --title " SSL Certificates " --menu "Select a domain to view details:" $WT_HEIGHT $WT_WIDTH $WT_MENU "${MENUS[@]}" 3>&1 1>&2 2>&3)
     [[ -z "$CHOICE" ]] && return
 
     SELECTED_INDEX=$((CHOICE - 1))
@@ -476,12 +504,12 @@ list_certificates() {
     PANEL_INFO=$(jq -r --arg d "$DOMAIN" '.domains[] | select(.main_domain==$d) | .panel' "$CONFIG_FILE" 2>/dev/null)
     [[ -z "$PANEL_INFO" || "$PANEL_INFO" == "null" ]] && PANEL_INFO="Unknown / Manual Install"
 
-    INFO="🌐 Domain: $DOMAIN\n"
-    INFO+="📦 Linked Panel DB: $PANEL_INFO\n"
-    INFO+="📂 Detected Path: $(dirname "$EXACT_CERT_FILE")\n"
-    INFO+="📅 Expire Date: $(date -d "$EXPIRY_DATE" +%Y-%m-%d)\n"
-    INFO+="⏳ Days Left: $DAYS_LEFT days\n"
-    INFO+="🏆 SSL Grade: $GRADE\n"
+    INFO="🌐 Domain: $DOMAIN\n\n"
+    INFO+="📦 Linked Panel DB: $PANEL_INFO\n\n"
+    INFO+="📂 Detected Path: $(dirname "$EXACT_CERT_FILE")\n\n"
+    INFO+="📅 Expire Date: $(date -d "$EXPIRY_DATE" +%Y-%m-%d)\n\n"
+    INFO+="⏳ Days Left: $DAYS_LEFT days\n\n"
+    INFO+="🏆 SSL Grade: $GRADE"
 
     msgbox "Certificate Info" "$INFO"
 }
@@ -493,8 +521,8 @@ dashboard() {
     TOTAL=$(find /etc/letsencrypt/live -maxdepth 1 -type d 2>/dev/null | wc -l)
     [[ $TOTAL -gt 0 ]] && TOTAL=$((TOTAL - 1))
     
-    DASH="📦 Total Certificates: $TOTAL\n"
-    DASH+="⚡ Enterprise Version: $VERSION\n"
+    DASH="📦 Total Certificates: $TOTAL\n\n"
+    DASH+="⚡ Enterprise Version: $VERSION\n\n"
     DASH+="📄 Log File: $LOG_FILE"
     
     msgbox "Live Dashboard" "$DASH"
@@ -504,7 +532,8 @@ dashboard() {
 # UPDATE SCRIPT
 # =========================================================
 update_script() {
-    whiptail --title " Update " --yesno "Check and install the latest update?" 12 75
+    calc_size
+    whiptail --title " Update " --yesno "Check and install the latest update?" 12 $WT_WIDTH
     [[ $? -ne 0 ]] && return
 
     HTTP_CODE=$(curl -H 'Cache-Control: no-cache' -s -w "%{http_code}" -o /tmp/certmaster_new.sh "$UPDATE_URL")
@@ -517,7 +546,7 @@ update_script() {
         chmod +x /usr/local/bin/certmaster
         
         log "UPDATE" "Script updated to version $VERSION"
-        msgbox "Success" "CertMaster updated successfully! Please run 'certmaster' again to see changes."
+        msgbox "Success" "CertMaster updated successfully!\n\nPlease run 'certmaster' again to see changes."
         exit 0
     else
         msgbox "Error" "Update failed. Error Code: $HTTP_CODE"
@@ -529,7 +558,9 @@ update_script() {
 # =========================================================
 main_menu() {
     while true; do
-        OPTION=$(whiptail --title " CERTMASTER v$VERSION " --menu "Advanced SSL Management Platform" 24 85 12 \
+        calc_size # محاسبه ابعاد ترمینال در هر بار رفرش صفحه
+        
+        OPTION=$(whiptail --title " CERTMASTER v$VERSION " --menu "Advanced SSL Management Platform" $WT_HEIGHT $WT_WIDTH $WT_MENU \
         "1" "Install New SSL Certificate" \
         "2" "Wildcard SSL (Cloudflare DNS)" \
         "3" "Delete Managed Certificate" \
