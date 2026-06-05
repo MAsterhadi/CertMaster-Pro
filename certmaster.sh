@@ -6,7 +6,7 @@
 #                 (Modern CLI Edition)
 # =========================================================
 
-VERSION="2.0.1 CLI"
+VERSION="1.0.2 CLI"
 
 # =========================================================
 # PATHS
@@ -109,7 +109,6 @@ detect_webserver() {
 
 ssl_grade() {
     DAYS=$1
-    # جلوگیری از باگ کرش ریاضی: بررسی معتبر بودن عدد
     if ! [[ "$DAYS" =~ ^-?[0-9]+$ ]]; then
         echo -e "${RED}ERR${RESET}"
         return
@@ -268,7 +267,15 @@ wildcard_ssl() {
 get_scanned_domains() {
     CERTS_LIST=()
     SEEN_DOMAINS=()
-    SEARCH_DIRS=("/etc/letsencrypt/live" "/var/lib/rebecca/certs" "/var/lib/marzban/certs" "/var/lib/pasarguard/certs" "/var/lib/marzneshin/certs")
+    
+    # اولویت اسکن تغییر یافت: ابتدا پنل‌ها اسکن می‌شوند تا مسیر و هویت دقیق ثبت شود
+    SEARCH_DIRS=(
+        "/var/lib/rebecca/certs"
+        "/var/lib/marzban/certs"
+        "/var/lib/pasarguard/certs"
+        "/var/lib/marzneshin/certs"
+        "/etc/letsencrypt/live"
+    )
 
     for base_dir in "${SEARCH_DIRS[@]}"; do
         [ -d "$base_dir" ] || continue
@@ -286,24 +293,27 @@ get_scanned_domains() {
             
             [ -z "$CERT_FILE" ] || [ ! -f "$CERT_FILE" ] && continue
 
-            # سیستم جلوگیری از کرش (تست سلامت فایل)
             EXPIRY_DATE=$(openssl x509 -enddate -noout -in "$CERT_FILE" 2>/dev/null | cut -d= -f2)
-            if [ -z "$EXPIRY_DATE" ]; then
-                # فایل ناقص یا خراب است، پرش از روی دامنه
-                continue
-            fi
+            if [ -z "$EXPIRY_DATE" ]; then continue; fi
             
             EXP_EPOCH=$(date -d "$EXPIRY_DATE" +%s 2>/dev/null)
             CUR_EPOCH=$(date +%s)
             
-            if [[ -z "$EXP_EPOCH" ]]; then
-                continue # محافظت نهایی در برابر خطای محاسباتی
-            else
-                DAYS_LEFT=$(( (EXP_EPOCH - CUR_EPOCH) / 86400 ))
-            fi
+            if [[ -z "$EXP_EPOCH" ]]; then continue; fi
+            DAYS_LEFT=$(( (EXP_EPOCH - CUR_EPOCH) / 86400 ))
             
+            # بررسی دیتابیس لوکال
             PANEL_INFO=$(jq -r --arg d "$DOMAIN" '.domains[] | select(.main_domain==$d) | .panel' "$CONFIG_FILE" 2>/dev/null)
-            [[ -z "$PANEL_INFO" || "$PANEL_INFO" == "null" ]] && PANEL_INFO="Unknown/Manual"
+            
+            # تشخیص هوشمند پنل از روی آدرس پوشه در صورت نبود در دیتابیس
+            if [[ -z "$PANEL_INFO" || "$PANEL_INFO" == "null" ]]; then
+                if [[ "$base_dir" == *"/rebecca/"* ]]; then PANEL_INFO="Rebecca"
+                elif [[ "$base_dir" == *"/marzban/"* ]]; then PANEL_INFO="Marzban"
+                elif [[ "$base_dir" == *"/pasarguard/"* ]]; then PANEL_INFO="Pasarguard"
+                elif [[ "$base_dir" == *"/marzneshin/"* ]]; then PANEL_INFO="Marzneshin"
+                else PANEL_INFO="Certbot/Standalone"
+                fi
+            fi
 
             SEEN_DOMAINS+=("$DOMAIN")
             CERTS_LIST+=("$DOMAIN|$DAYS_LEFT|$PANEL_INFO|$CERT_FILE") 
@@ -327,7 +337,6 @@ list_certificates() {
         return
     fi
 
-    # عریض شدن ستون نام دامنه (%-65s) برای جلوگیری از شکستگی جدول
     printf "${CYAN}%-4s %-65s %-15s %-10s %-8s${RESET}\n" "ID" "DOMAIN" "PANEL" "DAYS LEFT" "GRADE"
     echo -e "${GRAY}-------------------------------------------------------------------------------------------------------------${RESET}"
 
@@ -344,7 +353,6 @@ list_certificates() {
     echo
     read -p "➜ Select ID for details (or 0 to exit): " CHOICE
 
-    # بررسی صحت انتخاب و اجرای جزئیات
     if [[ "$CHOICE" =~ ^[0-9]+$ ]] && [ "$CHOICE" -gt 0 ] && [ "$CHOICE" -le ${#CERTS_LIST[@]} ]; then
         SELECTED_INDEX=$((CHOICE - 1))
         IFS='|' read -r d_name d_days d_panel d_file <<< "${CERTS_LIST[$SELECTED_INDEX]}"
@@ -354,7 +362,7 @@ list_certificates() {
         ui_header
         echo -e "${NEON_PINK}--- CERTIFICATE DETAILS ---${RESET}"
         echo -e "${CYAN}🌐 Domain:${RESET}       $d_name"
-        echo -e "${CYAN}📦 Panel DB:${RESET}     $d_panel"
+        echo -e "${CYAN}📦 Active Panel:${RESET} $d_panel"
         echo -e "${CYAN}📂 Cert File:${RESET}    $CERT_DIR/fullchain.pem"
         echo -e "${CYAN}🔑 Private Key:${RESET}  $CERT_DIR/privkey.pem"
         echo -e "${CYAN}⏳ Days Left:${RESET}    $d_days days"
@@ -379,7 +387,6 @@ delete_certificate() {
         return
     fi
 
-    # عریض شدن ستون‌ها در بخش حذف
     printf "${CYAN}%-4s %-65s %-15s${RESET}\n" "ID" "DOMAIN TO DELETE" "DETECTED IN"
     echo -e "${GRAY}-----------------------------------------------------------------------------------------${RESET}"
 
@@ -406,27 +413,22 @@ delete_certificate() {
         if [[ "$confirm" == "y" || "$confirm" == "Y" ]]; then
             progress_bar 15 "Purging $d_name from server..."
             
-            # 1. Purge from certbot
             certbot delete --cert-name "$d_name" --non-interactive >/dev/null 2>&1
             
-            # 2. Aggressive system-wide wipe (Fixes the ghost domain bug)
             rm -rf "/etc/letsencrypt/live/$d_name" 2>/dev/null
             rm -rf "/etc/letsencrypt/archive/$d_name" 2>/dev/null
             rm -f "/etc/letsencrypt/renewal/$d_name.conf" 2>/dev/null
             
-            # 3. Aggressive Panel wipe
             rm -rf "/var/lib/rebecca/certs/$d_name" 2>/dev/null
             rm -rf "/var/lib/marzban/certs/$d_name" 2>/dev/null
             rm -rf "/var/lib/pasarguard/certs/$d_name" 2>/dev/null
             rm -rf "/var/lib/marzneshin/certs/$d_name" 2>/dev/null
             
-            # 4. Remove custom path if any
             INSTALL_PATH=$(jq -r --arg d "$d_name" '.domains[] | select(.main_domain==$d) | .install_path' "$CONFIG_FILE" 2>/dev/null)
             if [[ ! -z "$INSTALL_PATH" && "$INSTALL_PATH" != "null" && -d "$INSTALL_PATH" ]]; then
                 rm -rf "$INSTALL_PATH" 2>/dev/null
             fi
 
-            # 5. Remove from Database
             TMP=$(jq --arg d "$d_name" '.domains |= map(select(.main_domain != $d))' "$CONFIG_FILE" 2>/dev/null)
             [[ ! -z "$TMP" ]] && echo "$TMP" > "$CONFIG_FILE"
 
