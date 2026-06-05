@@ -3,33 +3,10 @@
 # =========================================================
 #              CERTMASTER ENTERPRISE
 #        Ultimate Commercial SSL Management Suite
+#                 (Modern CLI Edition)
 # =========================================================
 
-VERSION="1.0.5"
-
-# =========================================================
-# COLOR THEME FOR TUI (WHIPTAIL)
-# =========================================================
-export NEWT_COLORS='
-root=,black
-window=,black
-border=cyan,black
-shadow=,black
-title=green,black
-button=black,cyan
-actbutton=white,blue
-compactbutton=black,cyan
-checkbox=black,cyan
-actcheckbox=white,blue
-entry=green,black
-label=white,black
-listbox=white,black
-actlistbox=black,cyan
-textbox=white,black
-acttextbox=black,cyan
-helpline=,black
-roottext=,black
-'
+VERSION="2.0.0 CLI"
 
 # =========================================================
 # PATHS
@@ -43,32 +20,28 @@ LOG_FILE="$LOG_DIR/activity.log"
 UPDATE_URL="https://raw.githubusercontent.com/MAsterhadi/CertMaster-Pro/main/certmaster.sh"
 
 # =========================================================
-# ROOT CHECK
+# NEON COLORS
+# =========================================================
+RESET='\033[0m'
+BOLD='\033[1m'
+RED='\033[1;31m'
+GREEN='\033[1;32m'
+YELLOW='\033[1;33m'
+CYAN='\033[1;36m'
+WHITE='\033[1;37m'
+NEON_BLUE='\033[38;5;45m'
+NEON_GREEN='\033[38;5;46m'
+NEON_PINK='\033[38;5;213m'
+GRAY='\033[38;5;245m'
+
+# =========================================================
+# ROOT CHECK & INIT
 # =========================================================
 if [[ $EUID -ne 0 ]]; then
-    echo -e "\033[1;31m❌ Please run as root.\033[0m"
+    echo -e "${RED}❌ Please run as root.${RESET}"
     exit 1
 fi
 
-# =========================================================
-# RESPONSIVE UI SIZING (DYNAMIC)
-# =========================================================
-calc_size() {
-    LINES=$(tput lines 2>/dev/null || echo 24)
-    COLS=$(tput cols 2>/dev/null || echo 80)
-    
-    # جلوگیری از کوچکتر شدن بیش از حد در ترمینال‌های مینی
-    [[ $LINES -lt 24 ]] && LINES=24
-    [[ $COLS -lt 70 ]] && COLS=70
-    
-    WT_HEIGHT=$((LINES - 4))
-    WT_WIDTH=$((COLS - 8))
-    WT_MENU=$((WT_HEIGHT - 10))
-}
-
-# =========================================================
-# INIT & DEPENDENCIES
-# =========================================================
 mkdir -p "$CONFIG_DIR" "$LOG_DIR" "$BACKUP_DIR"
 touch "$LOG_FILE"
 
@@ -84,203 +57,147 @@ cat > "$CONFIG_FILE" <<EOF
 EOF
 fi
 
-install_dependencies() {
-    PKGS=()
-    command -v jq >/dev/null || PKGS+=("jq")
-    command -v certbot >/dev/null || PKGS+=("certbot")
-    command -v curl >/dev/null || PKGS+=("curl")
-    command -v lsof >/dev/null || PKGS+=("lsof")
-    command -v openssl >/dev/null || PKGS+=("openssl")
-    command -v whiptail >/dev/null || PKGS+=("whiptail")
-
-    if [ ${#PKGS[@]} -gt 0 ]; then
-        apt update -y >/dev/null 2>&1
-        apt install -y "${PKGS[@]}" >/dev/null 2>&1
-    fi
-}
-install_dependencies
-
 # =========================================================
-# HELPERS
+# UI COMPONENTS
 # =========================================================
-log() {
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] [$1] $2" >> "$LOG_FILE"
+ui_header() {
+    clear
+    echo -e "${NEON_BLUE}${BOLD}"
+    echo "╭────────────────────────────────────────────────────────────────────────╮"
+    echo "│                   CERTMASTER ENTERPRISE v$VERSION                   │"
+    echo "│                Advanced SSL Management Terminal UI                     │"
+    echo "╰────────────────────────────────────────────────────────────────────────╯"
+    echo -e "${RESET}"
 }
 
-msgbox() {
-    calc_size
-    whiptail --title " $1 " --msgbox "\n$2" $WT_HEIGHT $WT_WIDTH
+success() { echo -e "${NEON_GREEN}[✔] $1${RESET}"; }
+error()   { echo -e "${RED}[✘] $1${RESET}"; }
+warning() { echo -e "${YELLOW}[⚠] $1${RESET}"; }
+info()    { echo -e "${CYAN}[i] $1${RESET}"; }
+log()     { echo "[$(date '+%Y-%m-%d %H:%M:%S')] [$1] $2" >> "$LOG_FILE"; }
+
+pause_screen() {
+    echo
+    echo -e "${GRAY}Press [ENTER] to return to menu...${RESET}"
+    read -r
 }
 
-progress_bar_ui() {
+progress_bar() {
     DURATION=$1
     TITLE=$2
-    calc_size
-    {
-        for ((i=0; i<=100; i+= (100/DURATION) )); do
-            echo $i
-            sleep 1
-        done
-        echo 100
-    } | whiptail --title " $TITLE " --gauge "\nProcessing... Please wait." 10 $WT_WIDTH 0
+    echo -e "${NEON_PINK}➜ $TITLE${RESET}"
+    for ((i=0; i<=DURATION; i++)); do
+        PERCENT=$((i * 100 / DURATION))
+        printf "\r${NEON_BLUE}["
+        for ((j=0; j<i; j++)); do printf "█"; done
+        for ((j=i; j<DURATION; j++)); do printf "░"; done
+        printf "] %d%%${RESET}" "$PERCENT"
+        sleep 0.05
+    done
+    echo
 }
 
+# =========================================================
+# CORE FUNCTIONS
+# =========================================================
 detect_webserver() {
-    if systemctl is-active nginx >/dev/null 2>&1; then
-        WEBSERVER="nginx"
-    elif systemctl is-active apache2 >/dev/null 2>&1; then
-        WEBSERVER="apache2"
-    else
-        WEBSERVER=""
+    if systemctl is-active nginx >/dev/null 2>&1; then WEBSERVER="nginx"
+    elif systemctl is-active apache2 >/dev/null 2>&1; then WEBSERVER="apache2"
+    else WEBSERVER=""
     fi
 }
 
 ssl_grade() {
     DAYS=$1
-    if [ $DAYS -gt 60 ]; then echo "A+"
-    elif [ $DAYS -gt 30 ]; then echo "A"
-    elif [ $DAYS -gt 15 ]; then echo "B"
-    else echo "C"
+    if [ $DAYS -gt 60 ]; then echo -e "${NEON_GREEN}A+${RESET}"
+    elif [ $DAYS -gt 30 ]; then echo -e "${GREEN}A${RESET}"
+    elif [ $DAYS -gt 15 ]; then echo -e "${YELLOW}B${RESET}"
+    else echo -e "${RED}C${RESET}"
     fi
 }
 
-# =========================================================
-# TELEGRAM ALERT
-# =========================================================
 telegram_alert() {
-    TOKEN=$(jq -r '.telegram_bot_token' "$CONFIG_FILE")
-    CHAT_ID=$(jq -r '.telegram_chat_id' "$CONFIG_FILE")
+    TOKEN=$(jq -r '.telegram_bot_token' "$CONFIG_FILE" 2>/dev/null)
+    CHAT_ID=$(jq -r '.telegram_chat_id' "$CONFIG_FILE" 2>/dev/null)
     if [[ ! -z "$TOKEN" && ! -z "$CHAT_ID" && "$TOKEN" != "null" ]]; then
-        curl -s -X POST "https://api.telegram.org/bot$TOKEN/sendMessage" \
-        -d chat_id="$CHAT_ID" -d text="$1" >/dev/null
+        curl -s -X POST "https://api.telegram.org/bot$TOKEN/sendMessage" -d chat_id="$CHAT_ID" -d text="$1" >/dev/null
     fi
 }
 
 # =========================================================
-# HEALTH MONITOR
+# 1. INSTALL SSL
 # =========================================================
-health_monitor() {
-    HEALTH_OUTPUT="🩺 SYSTEM HEALTH MONITOR\n\n"
-    
-    command -v certbot >/dev/null && HEALTH_OUTPUT+="✔ Certbot: Installed\n" || HEALTH_OUTPUT+="❌ Certbot: Missing\n"
-    systemctl is-active cron >/dev/null 2>&1 && HEALTH_OUTPUT+="✔ Cron: Active\n" || HEALTH_OUTPUT+="⚠ Cron: Inactive\n"
-    ping -c 1 google.com >/dev/null 2>&1 && HEALTH_OUTPUT+="✔ Internet: Connected\n" || HEALTH_OUTPUT+="❌ Internet: Disconnected\n"
-    
-    if lsof -Pi :80 -sTCP:LISTEN -t >/dev/null ; then
-        HEALTH_OUTPUT+="⚠ Port 80: IN USE\n"
-    else
-        HEALTH_OUTPUT+="✔ Port 80: Available\n"
-    fi
+install_certificate() {
+    ui_header
+    echo -e "${NEON_PINK}--- SELECT TARGET PANEL ---${RESET}"
+    echo -e " ${CYAN}1)${RESET} Rebecca"
+    echo -e " ${CYAN}2)${RESET} Marzban"
+    echo -e " ${CYAN}3)${RESET} Pasarguard"
+    echo -e " ${CYAN}4)${RESET} Marzneshin"
+    echo -e " ${CYAN}5)${RESET} Custom Path"
+    echo
+    read -p "➜ Enter panel number [1-5]: " panel_choice
 
-    detect_webserver
-    if [[ ! -z "$WEBSERVER" ]]; then
-        HEALTH_OUTPUT+="✔ Webserver: $WEBSERVER (Active)\n"
-    else
-        HEALTH_OUTPUT+="⚠ Webserver: None Detected\n"
-    fi
-
-    msgbox "Health Monitor" "$HEALTH_OUTPUT"
-}
-
-# =========================================================
-# AUTO REPAIR
-# =========================================================
-auto_repair() {
-    calc_size
-    whiptail --title " Auto Repair " --yesno "Start automated system repair?\n\nThis will fix broken packages and restart services." 12 $WT_WIDTH
-    [[ $? -ne 0 ]] && return
-
-    progress_bar_ui 5 "Repairing System"
-
-    apt --fix-broken install -y >/dev/null 2>&1
-    detect_webserver
-    [[ ! -z "$WEBSERVER" ]] && systemctl restart $WEBSERVER
-    certbot renew --dry-run >/dev/null 2>&1
-
-    log "REPAIR" "Auto repair completed"
-    msgbox "Success" "Auto repair completed successfully."
-}
-
-# =========================================================
-# PANEL SELECTOR
-# =========================================================
-select_panel() {
-    calc_size
-    PANEL_CHOICE=$(whiptail --title " Target Panel " --menu "Select the panel you want to secure:" $WT_HEIGHT $WT_WIDTH $WT_MENU \
-    "1" "Rebecca" \
-    "2" "Marzban" \
-    "3" "Pasarguard" \
-    "4" "Marzneshin" \
-    "5" "Custom Path" 3>&1 1>&2 2>&3)
-
-    case $PANEL_CHOICE in
+    case $panel_choice in
         1) TARGET_BASE_DIR="/var/lib/rebecca/certs"; PANEL_NAME="Rebecca" ;;
         2) TARGET_BASE_DIR="/var/lib/marzban/certs"; PANEL_NAME="Marzban" ;;
         3) TARGET_BASE_DIR="/var/lib/pasarguard/certs"; PANEL_NAME="Pasarguard" ;;
         4) TARGET_BASE_DIR="/var/lib/marzneshin/certs"; PANEL_NAME="Marzneshin" ;;
-        5) TARGET_BASE_DIR=$(whiptail --title " Custom Path " --inputbox "Enter custom absolute path for certs:" 12 $WT_WIDTH 3>&1 1>&2 2>&3); PANEL_NAME="Custom" ;;
-        *) return 1 ;;
+        5) read -p "➜ Enter custom absolute path: " TARGET_BASE_DIR; PANEL_NAME="Custom" ;;
+        *) error "Invalid choice."; pause_screen; return ;;
     esac
-}
 
-# =========================================================
-# INSTALL SSL
-# =========================================================
-install_certificate() {
-    select_panel || return
-    
-    calc_size
-    DOMAIN=$(whiptail --title " Domain Setup " --inputbox "Enter the domain name (e.g., app.example.com):" 12 $WT_WIDTH 3>&1 1>&2 2>&3)
+    echo
+    read -p "➜ Enter the domain name (e.g. app.example.com): " DOMAIN
     [[ -z "$DOMAIN" ]] && return
 
-    whiptail --title " Confirmation " --yesno "📌 TARGET VERIFICATION:\n\nDomain: $DOMAIN\nTarget Panel: $PANEL_NAME\nInstall Path: $TARGET_BASE_DIR/$DOMAIN\n\nProceed with these settings?" 15 $WT_WIDTH
-    [[ $? -ne 0 ]] && return
+    echo
+    echo -e "${NEON_PINK}--- SELECT CHALLENGE METHOD ---${RESET}"
+    echo -e " ${CYAN}1)${RESET} Webroot (No Downtime - Nginx/Apache)"
+    echo -e " ${CYAN}2)${RESET} Cloudflare DNS (No Downtime)"
+    echo -e " ${CYAN}3)${RESET} Standalone (Requires Port 80)"
+    echo
+    read -p "➜ Enter method number [1-3]: " challenge_choice
 
-    CHALLENGE=$(whiptail --title " SSL Challenge Method " --menu "Select validation method (Zero-Downtime Options):" $WT_HEIGHT $WT_WIDTH $WT_MENU \
-    "1" "Webroot (No Downtime - Requires Nginx/Apache)" \
-    "2" "Cloudflare DNS (No Downtime - Most Secure)" \
-    "3" "Standalone (Requires temporary Port 80 availability)" 3>&1 1>&2 2>&3)
-
-    case $CHALLENGE in
+    case $challenge_choice in
         1)
-            WEBROOT_PATH=$(whiptail --title " Webroot Path " --inputbox "Enter web server root path:" 12 $WT_WIDTH "/var/www/html" 3>&1 1>&2 2>&3)
+            read -p "➜ Enter webroot path [/var/www/html]: " WEBROOT_PATH
+            WEBROOT_PATH=${WEBROOT_PATH:-/var/www/html}
             CERT_CMD="certbot certonly --webroot -w $WEBROOT_PATH -d $DOMAIN --non-interactive --agree-tos --register-unsafely-without-email"
             ;;
         2)
             CF_EMAIL=$(jq -r '.cloudflare_email' "$CONFIG_FILE")
             CF_KEY=$(jq -r '.cloudflare_api_key' "$CONFIG_FILE")
-            if [[ -z "$CF_EMAIL" || "$CF_EMAIL" == "null" || -z "$CF_KEY" || "$CF_KEY" == "null" ]]; then
-                CF_EMAIL=$(whiptail --title " Cloudflare API " --inputbox "Enter Cloudflare Email:" 12 $WT_WIDTH 3>&1 1>&2 2>&3)
-                CF_KEY=$(whiptail --title " Cloudflare API " --inputbox "Enter Cloudflare API Key:" 12 $WT_WIDTH 3>&1 1>&2 2>&3)
+            if [[ -z "$CF_EMAIL" || "$CF_EMAIL" == "null" ]]; then
+                read -p "➜ Enter Cloudflare Email: " CF_EMAIL
+                read -p "➜ Enter Cloudflare API Key: " CF_KEY
                 TMP=$(jq --arg e "$CF_EMAIL" --arg k "$CF_KEY" '.cloudflare_email=$e | .cloudflare_api_key=$k' "$CONFIG_FILE")
                 echo "$TMP" > "$CONFIG_FILE"
             fi
             mkdir -p ~/.secrets
-            cat > ~/.secrets/cloudflare.ini <<EOF
-dns_cloudflare_email = $CF_EMAIL
-dns_cloudflare_api_key = $CF_KEY
-EOF
+            echo -e "dns_cloudflare_email = $CF_EMAIL\ndns_cloudflare_api_key = $CF_KEY" > ~/.secrets/cloudflare.ini
             chmod 600 ~/.secrets/cloudflare.ini
             CERT_CMD="certbot certonly --dns-cloudflare --dns-cloudflare-credentials ~/.secrets/cloudflare.ini -d $DOMAIN --non-interactive --agree-tos --register-unsafely-without-email"
             ;;
         3)
             if lsof -Pi :80 -sTCP:LISTEN -t >/dev/null ; then
-                whiptail --title " Port 80 in Use " --yesno "Port 80 is active. Stop webserver temporarily to issue SSL?" 12 $WT_WIDTH
-                if [[ $? -eq 0 ]]; then
+                warning "Port 80 is in use!"
+                read -p "➜ Stop webserver temporarily? (y/n): " stop_web
+                if [[ "$stop_web" =~ ^[Yy]$ ]]; then
                     detect_webserver
                     [[ ! -z "$WEBSERVER" ]] && systemctl stop $WEBSERVER
                 else
-                    return
+                    error "Operation aborted."; pause_screen; return
                 fi
             fi
             CERT_CMD="certbot certonly --standalone -d $DOMAIN --non-interactive --agree-tos --register-unsafely-without-email"
             ;;
-        *) return ;;
+        *) error "Invalid choice."; pause_screen; return ;;
     esac
 
-    clear
-    echo -e "\033[1;36mGenerating SSL Certificate for $DOMAIN...\033[0m"
-    $CERT_CMD
+    echo
+    progress_bar 20 "Requesting Certificate for $DOMAIN..."
+    $CERT_CMD >/dev/null 2>&1
 
     if [ $? -eq 0 ]; then
         FINAL_PATH="$TARGET_BASE_DIR/$DOMAIN"
@@ -293,121 +210,276 @@ EOF
         TMP=$(jq --arg d "$DOMAIN" --arg p "$FINAL_PATH" --arg pn "$PANEL_NAME" '.domains += [{"main_domain":$d, "install_path":$p, "panel":$pn}]' "$CONFIG_FILE")
         echo "$TMP" > "$CONFIG_FILE"
 
-        log "SUCCESS" "Installed SSL for $DOMAIN on $PANEL_NAME"
-        telegram_alert "✅ SSL Installed Successfully\nDomain: $DOMAIN\nPanel: $PANEL_NAME"
-        msgbox "Success" "Certificate generated and copied to $PANEL_NAME!"
+        success "Certificate successfully installed to $PANEL_NAME!"
+        log "SUCCESS" "Installed SSL for $DOMAIN"
+        telegram_alert "✅ SSL Installed\nDomain: $DOMAIN\nPanel: $PANEL_NAME"
     else
+        error "Failed to generate certificate. Please check certbot logs."
         log "ERROR" "SSL failed for $DOMAIN"
-        telegram_alert "❌ SSL Generation Failed\nDomain: $DOMAIN"
-        msgbox "Error" "Failed to generate certificate. Check logs."
     fi
 
     detect_webserver
-    [[ ! -z "$WEBSERVER" && "$CHALLENGE" == "3" ]] && systemctl start $WEBSERVER
+    [[ ! -z "$WEBSERVER" && "$challenge_choice" == "3" ]] && systemctl start $WEBSERVER
+    pause_screen
 }
 
 # =========================================================
-# WILDCARD SSL
+# 2. WILDCARD SSL
 # =========================================================
 wildcard_ssl() {
-    calc_size
-    DOMAIN=$(whiptail --title " Wildcard SSL " --inputbox "Enter base domain (e.g., example.com):" 12 $WT_WIDTH 3>&1 1>&2 2>&3)
+    ui_header
+    echo -e "${NEON_PINK}--- GENERATE WILDCARD SSL ---${RESET}"
+    read -p "➜ Enter base domain (e.g. example.com): " DOMAIN
     [[ -z "$DOMAIN" ]] && return
 
     CF_EMAIL=$(jq -r '.cloudflare_email' "$CONFIG_FILE")
     CF_KEY=$(jq -r '.cloudflare_api_key' "$CONFIG_FILE")
-
     if [[ -z "$CF_EMAIL" || "$CF_EMAIL" == "null" ]]; then
-        CF_EMAIL=$(whiptail --title " Cloudflare API " --inputbox "Enter Cloudflare Email:" 12 $WT_WIDTH 3>&1 1>&2 2>&3)
-        CF_KEY=$(whiptail --title " Cloudflare API " --inputbox "Enter Cloudflare API Key:" 12 $WT_WIDTH 3>&1 1>&2 2>&3)
+        read -p "➜ Enter Cloudflare Email: " CF_EMAIL
+        read -p "➜ Enter Cloudflare API Key: " CF_KEY
         TMP=$(jq --arg e "$CF_EMAIL" --arg k "$CF_KEY" '.cloudflare_email=$e | .cloudflare_api_key=$k' "$CONFIG_FILE")
         echo "$TMP" > "$CONFIG_FILE"
     fi
-
     mkdir -p ~/.secrets
-    cat > ~/.secrets/cloudflare.ini <<EOF
-dns_cloudflare_email = $CF_EMAIL
-dns_cloudflare_api_key = $CF_KEY
-EOF
+    echo -e "dns_cloudflare_email = $CF_EMAIL\ndns_cloudflare_api_key = $CF_KEY" > ~/.secrets/cloudflare.ini
     chmod 600 ~/.secrets/cloudflare.ini
 
-    clear
-    echo -e "\033[1;36mGenerating Wildcard SSL for *.$DOMAIN...\033[0m"
-    certbot certonly --dns-cloudflare --dns-cloudflare-credentials ~/.secrets/cloudflare.ini -d "*.$DOMAIN" -d "$DOMAIN" --non-interactive --agree-tos --register-unsafely-without-email
+    echo
+    progress_bar 25 "Requesting Wildcard Certificate..."
+    certbot certonly --dns-cloudflare --dns-cloudflare-credentials ~/.secrets/cloudflare.ini -d "*.$DOMAIN" -d "$DOMAIN" --non-interactive --agree-tos --register-unsafely-without-email >/dev/null 2>&1
     
     if [ $? -eq 0 ]; then
-        msgbox "Success" "Wildcard SSL generated successfully."
+        success "Wildcard SSL generated successfully for *.$DOMAIN!"
     else
-        msgbox "Error" "Failed to generate Wildcard SSL."
+        error "Failed to generate Wildcard SSL."
     fi
+    pause_screen
 }
 
 # =========================================================
-# DELETE CERTIFICATE (DEEP CLEAN)
+# GET DOMAINS CORE (Shared by List and Delete)
 # =========================================================
-delete_certificate() {
-    calc_size
-    DOMAINS_LIST=()
+get_scanned_domains() {
+    CERTS_LIST=()
+    SEEN_DOMAINS=()
+    SEARCH_DIRS=("/etc/letsencrypt/live" "/var/lib/rebecca/certs" "/var/lib/marzban/certs" "/var/lib/pasarguard/certs" "/var/lib/marzneshin/certs")
 
-    # اسکن مستقیم از هسته سرتبات
-    for cert_dir in /etc/letsencrypt/live/*; do
-        [ -d "$cert_dir" ] || continue
-        DOMAIN=$(basename "$cert_dir")
-        [ "$DOMAIN" == "README" ] && continue
+    for base_dir in "${SEARCH_DIRS[@]}"; do
+        [ -d "$base_dir" ] || continue
+        for cert_dir in "$base_dir"/*; do
+            [ -d "$cert_dir" ] || continue
+            DOMAIN=$(basename "$cert_dir")
+            [ "$DOMAIN" == "README" ] && continue
+            
+            if [[ " ${SEEN_DOMAINS[@]} " =~ " ${DOMAIN} " ]]; then continue; fi
 
-        PANEL_INFO=$(jq -r --arg d "$DOMAIN" '.domains[] | select(.main_domain==$d) | .panel' "$CONFIG_FILE" 2>/dev/null)
-        [[ -z "$PANEL_INFO" || "$PANEL_INFO" == "null" ]] && PANEL_INFO="Unknown"
+            CERT_FILE="$cert_dir/fullchain.pem"
+            if [ ! -f "$CERT_FILE" ]; then
+                CERT_FILE=$(find "$cert_dir" -maxdepth 1 -name "*.crt" -o -name "*.pem" 2>/dev/null | head -n 1)
+            fi
+            
+            [ -z "$CERT_FILE" ] || [ ! -f "$CERT_FILE" ] && continue
 
-        DOMAINS_LIST+=("$DOMAIN" "[$PANEL_INFO]")
+            EXPIRY_DATE=$(openssl x509 -enddate -noout -in "$CERT_FILE" 2>/dev/null | cut -d= -f2)
+            [ -z "$EXPIRY_DATE" ] && continue
+            
+            DAYS_LEFT=$(( ($(date -d "$EXPIRY_DATE" +%s) - $(date +%s)) / 86400 ))
+            
+            PANEL_INFO=$(jq -r --arg d "$DOMAIN" '.domains[] | select(.main_domain==$d) | .panel' "$CONFIG_FILE" 2>/dev/null)
+            [[ -z "$PANEL_INFO" || "$PANEL_INFO" == "null" ]] && PANEL_INFO="Unknown/Manual"
+
+            SEEN_DOMAINS+=("$DOMAIN")
+            CERTS_LIST+=("$DOMAIN|$DAYS_LEFT|$PANEL_INFO|$CERT_FILE") 
+        done
     done
+}
 
-    if [ ${#DOMAINS_LIST[@]} -eq 0 ]; then
-        msgbox "Empty" "No managed certificates found on the server."
+# =========================================================
+# 3. LIST CERTIFICATES
+# =========================================================
+list_certificates() {
+    ui_header
+    echo -e "${NEON_PINK}--- MANAGED CERTIFICATES ---${RESET}"
+    echo
+    
+    get_scanned_domains
+
+    if [ ${#CERTS_LIST[@]} -eq 0 ]; then
+        warning "No SSL certificates found on the server."
+        pause_screen
         return
     fi
 
-    SELECTED_DOMAIN=$(whiptail --title " Delete Certificate " --menu "Select domain to COMPLETELY remove:" $WT_HEIGHT $WT_WIDTH $WT_MENU "${DOMAINS_LIST[@]}" 3>&1 1>&2 2>&3)
-    [[ -z "$SELECTED_DOMAIN" ]] && return
+    printf "${CYAN}%-4s %-40s %-15s %-10s %-8s${RESET}\n" "ID" "DOMAIN" "PANEL" "DAYS LEFT" "GRADE"
+    echo -e "${GRAY}--------------------------------------------------------------------------------${RESET}"
 
-    whiptail --title " Warning " --yesno "Are you sure you want to completely DELETE $SELECTED_DOMAIN?\n\nThis removes it from Certbot, the target panel, and database." 12 $WT_WIDTH
-    [[ $? -ne 0 ]] && return
+    INDEX=1
+    for item in "${CERTS_LIST[@]}"; do
+        IFS='|' read -r d_name d_days d_panel d_file <<< "$item"
+        GRADE=$(ssl_grade $d_days)
+        printf "%-4s %-40s %-15s %-10s %-8b\n" "[$INDEX]" "$d_name" "$d_panel" "$d_days" "$GRADE"
+        ((INDEX++))
+    done
 
-    # 1. حذف محترمانه از طریق سرتبات
-    certbot delete --cert-name "$SELECTED_DOMAIN" --non-interactive >/dev/null 2>&1
-    
-    # 2. حذف ریشه‌ای و اجباری برای جلوگیری از باگ‌های سرتبات
-    rm -rf "/etc/letsencrypt/live/$SELECTED_DOMAIN"
-    rm -rf "/etc/letsencrypt/archive/$SELECTED_DOMAIN"
-    rm -f "/etc/letsencrypt/renewal/$SELECTED_DOMAIN.conf"
-    
-    # 3. حذف فایل‌های پنل
-    INSTALL_PATH=$(jq -r --arg d "$SELECTED_DOMAIN" '.domains[] | select(.main_domain==$d) | .install_path' "$CONFIG_FILE" 2>/dev/null)
-    if [[ ! -z "$INSTALL_PATH" && "$INSTALL_PATH" != "null" && -d "$INSTALL_PATH" ]]; then
-        rm -rf "$INSTALL_PATH"
+    echo
+    echo -e "${GRAY}0) Return to Main Menu${RESET}"
+    echo
+    read -p "➜ Select ID for details (or 0 to exit): " CHOICE
+
+    if [[ "$CHOICE" =~ ^[0-9]+$ ]] && [ "$CHOICE" -gt 0 ] && [ "$CHOICE" -le ${#CERTS_LIST[@]} ]; then
+        SELECTED_INDEX=$((CHOICE - 1))
+        IFS='|' read -r d_name d_days d_panel d_file <<< "${CERTS_LIST[$SELECTED_INDEX]}"
+        
+        ui_header
+        echo -e "${NEON_PINK}--- CERTIFICATE DETAILS ---${RESET}"
+        echo -e "${CYAN}🌐 Domain:${RESET}       $d_name"
+        echo -e "${CYAN}📦 Panel DB:${RESET}     $d_panel"
+        echo -e "${CYAN}📂 Detected Path:${RESET} $(dirname "$d_file")"
+        echo -e "${CYAN}⏳ Days Left:${RESET}    $d_days days"
+        echo -e "${CYAN}🏆 SSL Grade:${RESET}    $(ssl_grade $d_days)"
     fi
-
-    # 4. پاک کردن از دیتابیس محلی
-    TMP=$(jq --arg d "$SELECTED_DOMAIN" '.domains |= map(select(.main_domain != $d))' "$CONFIG_FILE" 2>/dev/null)
-    [[ ! -z "$TMP" ]] && echo "$TMP" > "$CONFIG_FILE"
-
-    log "DELETE" "Completely removed domain $SELECTED_DOMAIN"
-    msgbox "Success" "Domain $SELECTED_DOMAIN has been completely wiped from the server."
+    pause_screen
 }
 
 # =========================================================
-# SMART AUTO RENEW & SYNC
+# 4. DELETE CERTIFICATE (DEEP CLEAN)
+# =========================================================
+delete_certificate() {
+    ui_header
+    echo -e "${NEON_PINK}--- DELETE CERTIFICATES ---${RESET}"
+    echo
+    
+    get_scanned_domains
+
+    if [ ${#CERTS_LIST[@]} -eq 0 ]; then
+        warning "No SSL certificates found to delete."
+        pause_screen
+        return
+    fi
+
+    printf "${CYAN}%-4s %-45s %-15s${RESET}\n" "ID" "DOMAIN TO DELETE" "DETECTED IN"
+    echo -e "${GRAY}----------------------------------------------------------------------${RESET}"
+
+    INDEX=1
+    for item in "${CERTS_LIST[@]}"; do
+        IFS='|' read -r d_name d_days d_panel d_file <<< "$item"
+        printf "%-4s %-45s %-15s\n" "[$INDEX]" "$d_name" "$d_panel"
+        ((INDEX++))
+    done
+
+    echo
+    echo -e "${GRAY}0) Cancel and Return${RESET}"
+    echo
+    read -p "➜ Enter the ID of the domain to completely wipe: " CHOICE
+
+    if [[ "$CHOICE" =~ ^[0-9]+$ ]] && [ "$CHOICE" -gt 0 ] && [ "$CHOICE" -le ${#CERTS_LIST[@]} ]; then
+        SELECTED_INDEX=$((CHOICE - 1))
+        IFS='|' read -r d_name d_days d_panel d_file <<< "${CERTS_LIST[$SELECTED_INDEX]}"
+        
+        echo
+        warning "You are about to completely wipe: $d_name"
+        read -p "➜ Are you absolutely sure? (Type 'y' to confirm): " confirm
+        
+        if [[ "$confirm" == "y" || "$confirm" == "Y" ]]; then
+            progress_bar 15 "Purging $d_name from server..."
+            
+            # 1. Purge from certbot
+            certbot delete --cert-name "$d_name" --non-interactive >/dev/null 2>&1
+            
+            # 2. Aggressive system-wide wipe (Fixes the ghost domain bug)
+            rm -rf "/etc/letsencrypt/live/$d_name" 2>/dev/null
+            rm -rf "/etc/letsencrypt/archive/$d_name" 2>/dev/null
+            rm -f "/etc/letsencrypt/renewal/$d_name.conf" 2>/dev/null
+            
+            # 3. Aggressive Panel wipe
+            rm -rf "/var/lib/rebecca/certs/$d_name" 2>/dev/null
+            rm -rf "/var/lib/marzban/certs/$d_name" 2>/dev/null
+            rm -rf "/var/lib/pasarguard/certs/$d_name" 2>/dev/null
+            rm -rf "/var/lib/marzneshin/certs/$d_name" 2>/dev/null
+            
+            # 4. Remove custom path if any
+            INSTALL_PATH=$(jq -r --arg d "$d_name" '.domains[] | select(.main_domain==$d) | .install_path' "$CONFIG_FILE" 2>/dev/null)
+            if [[ ! -z "$INSTALL_PATH" && "$INSTALL_PATH" != "null" && -d "$INSTALL_PATH" ]]; then
+                rm -rf "$INSTALL_PATH" 2>/dev/null
+            fi
+
+            # 5. Remove from Database
+            TMP=$(jq --arg d "$d_name" '.domains |= map(select(.main_domain != $d))' "$CONFIG_FILE" 2>/dev/null)
+            [[ ! -z "$TMP" ]] && echo "$TMP" > "$CONFIG_FILE"
+
+            success "Domain $d_name completely obliterated from the server."
+            log "DELETE" "Wiped domain $d_name"
+        else
+            info "Deletion cancelled."
+        fi
+    fi
+    pause_screen
+}
+
+# =========================================================
+# 5. HEALTH MONITOR
+# =========================================================
+health_monitor() {
+    ui_header
+    echo -e "${NEON_PINK}--- SYSTEM HEALTH MONITOR ---${RESET}"
+    echo
+    
+    command -v certbot >/dev/null && success "Certbot: Installed" || error "Certbot: Missing"
+    systemctl is-active cron >/dev/null 2>&1 && success "Cron: Active" || warning "Cron: Inactive"
+    ping -c 1 google.com >/dev/null 2>&1 && success "Internet: Connected" || error "Internet: Disconnected"
+    
+    if lsof -Pi :80 -sTCP:LISTEN -t >/dev/null ; then warning "Port 80: IN USE"
+    else success "Port 80: Available"
+    fi
+
+    detect_webserver
+    if [[ ! -z "$WEBSERVER" ]]; then success "Webserver: $WEBSERVER (Active)"
+    else warning "Webserver: None Detected"
+    fi
+
+    pause_screen
+}
+
+# =========================================================
+# 6. AUTO REPAIR
+# =========================================================
+auto_repair() {
+    ui_header
+    echo -e "${NEON_PINK}--- SYSTEM AUTO REPAIR ---${RESET}"
+    read -p "➜ Start automated system repair? (y/n): " confirm
+    [[ "$confirm" =~ ^[Yy]$ ]] || return
+
+    echo
+    progress_bar 25 "Repairing System Packages..."
+    apt --fix-broken install -y >/dev/null 2>&1
+    
+    detect_webserver
+    [[ ! -z "$WEBSERVER" ]] && systemctl restart $WEBSERVER
+    
+    certbot renew --dry-run >/dev/null 2>&1
+    
+    success "Auto repair completed successfully."
+    log "REPAIR" "Auto repair completed"
+    pause_screen
+}
+
+# =========================================================
+# 7. AUTO RENEW
 # =========================================================
 setup_auto_renew() {
-    calc_size
-    CRON_JOB="0 3 * * * certbot renew --quiet --deploy-hook \"/usr/local/bin/certmaster --sync\" >> $LOG_FILE 2>&1"
+    ui_header
+    echo -e "${NEON_PINK}--- SMART AUTO RENEW ---${RESET}"
+    echo -e "This will automatically renew certs and sync files to panels."
+    read -p "➜ Enable Auto-Renew? (y/n): " confirm
     
-    whiptail --title " Smart Auto-Renew " --yesno "Enable Smart Auto-Renew?\n\nIt automatically checks daily and ONLY copies files to your panels if a certificate was successfully renewed." 12 $WT_WIDTH
-    if [ $? -eq 0 ]; then
+    if [[ "$confirm" =~ ^[Yy]$ ]]; then
+        CRON_JOB="0 3 * * * certbot renew --quiet --deploy-hook \"/usr/local/bin/certmaster --sync\" >> $LOG_FILE 2>&1"
         crontab -l 2>/dev/null | grep -v "certmaster" | crontab -
         (crontab -l 2>/dev/null; echo "$CRON_JOB") | crontab -
+        success "Smart Auto-Renew is now Active."
         log "INFO" "Smart Auto-Renew Enabled"
-        msgbox "Enabled" "Smart Auto-Renew is active."
     fi
+    pause_screen
 }
 
 sync_certificates() {
@@ -434,123 +506,46 @@ if [[ "$1" == "--sync" ]]; then
 fi
 
 # =========================================================
-# LIST CERTIFICATES
-# =========================================================
-list_certificates() {
-    calc_size
-    CERTS=()
-    MENUS=()
-    SEEN_DOMAINS=()
-    INDEX=1
-
-    SEARCH_DIRS=(
-        "/etc/letsencrypt/live"
-        "/var/lib/rebecca/certs"
-        "/var/lib/marzban/certs"
-        "/var/lib/pasarguard/certs"
-        "/var/lib/marzneshin/certs"
-    )
-
-    for base_dir in "${SEARCH_DIRS[@]}"; do
-        [ -d "$base_dir" ] || continue
-        
-        for cert_dir in "$base_dir"/*; do
-            [ -d "$cert_dir" ] || continue
-            DOMAIN=$(basename "$cert_dir")
-            [ "$DOMAIN" == "README" ] && continue
-            
-            if [[ " ${SEEN_DOMAINS[@]} " =~ " ${DOMAIN} " ]]; then
-                continue
-            fi
-
-            CERT_FILE="$cert_dir/fullchain.pem"
-            if [ ! -f "$CERT_FILE" ]; then
-                CERT_FILE=$(find "$cert_dir" -maxdepth 1 -name "*.crt" -o -name "*.pem" | head -n 1)
-            fi
-            
-            [ -z "$CERT_FILE" ] || [ ! -f "$CERT_FILE" ] && continue
-
-            EXPIRY_DATE=$(openssl x509 -enddate -noout -in "$CERT_FILE" 2>/dev/null | cut -d= -f2)
-            [ -z "$EXPIRY_DATE" ] && continue
-            
-            DAYS_LEFT=$(( ($(date -d "$EXPIRY_DATE" +%s) - $(date +%s)) / 86400 ))
-            GRADE=$(ssl_grade $DAYS_LEFT)
-            
-            SEEN_DOMAINS+=("$DOMAIN")
-            CERTS+=("$CERT_FILE|$DOMAIN") 
-            MENUS+=("$INDEX" "$DOMAIN | Exp: $DAYS_LEFT d | $GRADE")
-            ((INDEX++))
-        done
-    done
-
-    if [ ${#MENUS[@]} -eq 0 ]; then
-        msgbox "Certificates" "No SSL certificates found on the server."
-        return
-    fi
-
-    CHOICE=$(whiptail --title " SSL Certificates " --menu "Select a domain to view details:" $WT_HEIGHT $WT_WIDTH $WT_MENU "${MENUS[@]}" 3>&1 1>&2 2>&3)
-    [[ -z "$CHOICE" ]] && return
-
-    SELECTED_INDEX=$((CHOICE - 1))
-    SELECTED_DATA="${CERTS[$SELECTED_INDEX]}"
-    
-    EXACT_CERT_FILE="${SELECTED_DATA%%|*}"
-    DOMAIN="${SELECTED_DATA##*|}"
-    
-    EXPIRY_DATE=$(openssl x509 -enddate -noout -in "$EXACT_CERT_FILE" | cut -d= -f2)
-    DAYS_LEFT=$(( ($(date -d "$EXPIRY_DATE" +%s) - $(date +%s)) / 86400 ))
-    GRADE=$(ssl_grade $DAYS_LEFT)
-    
-    PANEL_INFO=$(jq -r --arg d "$DOMAIN" '.domains[] | select(.main_domain==$d) | .panel' "$CONFIG_FILE" 2>/dev/null)
-    [[ -z "$PANEL_INFO" || "$PANEL_INFO" == "null" ]] && PANEL_INFO="Unknown / Manual Install"
-
-    INFO="🌐 Domain: $DOMAIN\n\n"
-    INFO+="📦 Linked Panel DB: $PANEL_INFO\n\n"
-    INFO+="📂 Detected Path: $(dirname "$EXACT_CERT_FILE")\n\n"
-    INFO+="📅 Expire Date: $(date -d "$EXPIRY_DATE" +%Y-%m-%d)\n\n"
-    INFO+="⏳ Days Left: $DAYS_LEFT days\n\n"
-    INFO+="🏆 SSL Grade: $GRADE"
-
-    msgbox "Certificate Info" "$INFO"
-}
-
-# =========================================================
-# DASHBOARD
+# 8. DASHBOARD
 # =========================================================
 dashboard() {
+    ui_header
     TOTAL=$(find /etc/letsencrypt/live -maxdepth 1 -type d 2>/dev/null | wc -l)
     [[ $TOTAL -gt 0 ]] && TOTAL=$((TOTAL - 1))
     
-    DASH="📦 Total Certificates: $TOTAL\n\n"
-    DASH+="⚡ Enterprise Version: $VERSION\n\n"
-    DASH+="📄 Log File: $LOG_FILE"
-    
-    msgbox "Live Dashboard" "$DASH"
+    echo -e "${NEON_PINK}--- LIVE DASHBOARD ---${RESET}"
+    echo
+    echo -e "${CYAN}📦 Managed Certificates:${RESET} $TOTAL"
+    echo -e "${CYAN}⚡ Software Version:${RESET}     v$VERSION"
+    echo -e "${CYAN}📄 Log File Path:${RESET}        $LOG_FILE"
+    pause_screen
 }
 
 # =========================================================
-# UPDATE SCRIPT
+# 9. UPDATE SCRIPT
 # =========================================================
 update_script() {
-    calc_size
-    whiptail --title " Update " --yesno "Check and install the latest update?" 12 $WT_WIDTH
-    [[ $? -ne 0 ]] && return
+    ui_header
+    echo -e "${NEON_PINK}--- SOFTWARE UPDATE ---${RESET}"
+    read -p "➜ Check and install latest update? (y/n): " confirm
+    [[ "$confirm" =~ ^[Yy]$ ]] || return
 
+    echo
+    progress_bar 20 "Connecting to GitHub..."
     HTTP_CODE=$(curl -H 'Cache-Control: no-cache' -s -w "%{http_code}" -o /tmp/certmaster_new.sh "$UPDATE_URL")
     
     if [[ "$HTTP_CODE" == "200" ]]; then
         mv /tmp/certmaster_new.sh /opt/CertMaster-Pro/certmaster.sh
         chmod +x /opt/CertMaster-Pro/certmaster.sh
-        
         cp /opt/CertMaster-Pro/certmaster.sh /usr/local/bin/certmaster
         chmod +x /usr/local/bin/certmaster
         
-        log "UPDATE" "Script updated to version $VERSION"
-        msgbox "Success" "CertMaster updated successfully!\n\nPlease run 'certmaster' again to see changes."
+        success "CertMaster updated successfully! Run 'certmaster' to see changes."
         exit 0
     else
-        msgbox "Error" "Update failed. Error Code: $HTTP_CODE"
+        error "Update failed. GitHub returned HTTP Code: $HTTP_CODE"
     fi
+    pause_screen
 }
 
 # =========================================================
@@ -558,35 +553,32 @@ update_script() {
 # =========================================================
 main_menu() {
     while true; do
-        calc_size # محاسبه ابعاد ترمینال در هر بار رفرش صفحه
-        
-        OPTION=$(whiptail --title " CERTMASTER v$VERSION " --menu "Advanced SSL Management Platform" $WT_HEIGHT $WT_WIDTH $WT_MENU \
-        "1" "Install New SSL Certificate" \
-        "2" "Wildcard SSL (Cloudflare DNS)" \
-        "3" "Delete Managed Certificate" \
-        "4" "List Certificates & Health" \
-        "5" "System Health Monitor" \
-        "6" "Auto Repair System" \
-        "7" "Setup Smart Auto-Renew" \
-        "8" "Force Sync to Panels" \
-        "9" "Live Dashboard" \
-        "10" "Update Script" \
-        "0" "Exit CertMaster" 3>&1 1>&2 2>&3)
-
-        if [ $? -ne 0 ]; then clear; break; fi
+        ui_header
+        echo -e "  ${NEON_GREEN}1)${RESET} Install New SSL Certificate"
+        echo -e "  ${NEON_GREEN}2)${RESET} Wildcard SSL (Cloudflare)"
+        echo -e "  ${NEON_GREEN}3)${RESET} List Managed Certificates"
+        echo -e "  ${NEON_GREEN}4)${RESET} Delete / Wipe Certificate"
+        echo -e "  ${NEON_GREEN}5)${RESET} System Health Monitor"
+        echo -e "  ${NEON_GREEN}6)${RESET} Auto Repair System"
+        echo -e "  ${NEON_GREEN}7)${RESET} Setup Smart Auto-Renew"
+        echo -e "  ${NEON_GREEN}8)${RESET} Live Dashboard"
+        echo -e "  ${NEON_GREEN}9)${RESET} Update Script"
+        echo -e "  ${RED}0)${RESET} Exit"
+        echo
+        read -p "➜ Select Option [0-9]: " OPTION
 
         case $OPTION in
             1) install_certificate ;;
             2) wildcard_ssl ;;
-            3) delete_certificate ;;
-            4) list_certificates ;;
+            3) list_certificates ;;
+            4) delete_certificate ;;
             5) health_monitor ;;
             6) auto_repair ;;
             7) setup_auto_renew ;;
-            8) sync_certificates; msgbox "Sync" "Manual sync executed successfully." ;;
-            9) dashboard ;;
-            10) update_script ;;
+            8) dashboard ;;
+            9) update_script ;;
             0) clear; exit 0 ;;
+            *) error "Invalid option."; sleep 1 ;;
         esac
     done
 }
